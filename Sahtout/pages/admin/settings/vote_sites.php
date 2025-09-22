@@ -33,6 +33,20 @@ $errors = [];
 $status = '';
 $message = '';
 
+// Log form submissions for debugging
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $log_dir = dirname(__DIR__) . '/pingback';
+    $log_file = $log_dir . '/debug.log';
+    if (!is_dir($log_dir)) {
+        mkdir($log_dir, 0755, true);
+    }
+    if (is_writable($log_dir)) {
+        file_put_contents($log_file, "Vote Sites Form Submission: " . json_encode($_POST, JSON_PRETTY_PRINT) . "\n---\n", FILE_APPEND);
+    } else {
+        $errors[] = translate('err_log_not_writable', 'Debug log directory is not writable.');
+    }
+}
+
 // Handle Delete Image
 if (isset($_GET['delete_image']) && is_numeric($_GET['delete_image'])) {
     $delete_id = (int)$_GET['delete_image'];
@@ -158,6 +172,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $errors[] = translate('err_siteid_too_long', 'Site ID must not exceed 255 characters.');
         }
 
+        // Validate url_format
+        if (empty($url_format)) {
+            $errors[] = translate('err_url_format_required', 'Vote URL Format is required.');
+        } elseif (strlen($url_format) > 255) {
+            $errors[] = translate('err_url_format_too_long', 'URL format must not exceed 255 characters.');
+        }
+
         // Handle file upload
         if (isset($_FILES['button_image']) && $_FILES['button_image']['error'] !== UPLOAD_ERR_NO_FILE) {
             $upload_dir = dirname(__DIR__, 3) . '/img/voteimg/';
@@ -246,17 +267,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
+        // Validate other fields
         if (empty($site_name)) {
             $errors[] = translate('err_site_name_required', 'Site name is required.');
         } elseif (strlen($site_name) > 50) {
             $errors[] = translate('err_site_name_too_long', 'Site name must not exceed 50 characters.');
-        }
-        if (empty($url_format)) {
-            $errors[] = translate('err_url_format_required', 'Vote URL Format is required.');
-        } elseif (!preg_match('/^(?:https?:\/\/)?[\w\-\/\.]+(?:\?[\w\-=&%]+)?$/', $url_format)) {
-            $errors[] = translate('err_invalid_url_format', 'Invalid URL format.');
-        } elseif (strlen($url_format) > 255) {
-            $errors[] = translate('err_url_format_too_long', 'URL format must not exceed 255 characters.');
         }
         if (!is_null($button_image_url) && !empty($button_image_url) && strlen($button_image_url) > 255) {
             $errors[] = translate('err_invalid_image_url', 'Button image URL too long.');
@@ -275,10 +290,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             try {
                 if ($site_id > 0) {
                     $stmt = $site_db->prepare("UPDATE vote_sites SET callback_file_name = ?, site_name = ?, siteid = ?, url_format = ?, button_image_url = ?, cooldown_hours = ?, reward_points = ?, uses_callback = ?, callback_secret = ? WHERE id = ?");
-                    $stmt->bind_param("sssssiisi", $callback_file_name, $site_name, $siteid, $url_format, $button_image_url, $cooldown_hours, $reward_points, $uses_callback, $callback_secret, $site_id);
+                    $stmt->bind_param("sssssiissi", $callback_file_name, $site_name, $siteid, $url_format, $button_image_url, $cooldown_hours, $reward_points, $uses_callback, $callback_secret, $site_id);
                 } else {
                     $stmt = $site_db->prepare("INSERT INTO vote_sites (callback_file_name, site_name, siteid, url_format, button_image_url, cooldown_hours, reward_points, uses_callback, callback_secret) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
-                    $stmt->bind_param("sssssiis", $callback_file_name, $site_name, $siteid, $url_format, $button_image_url, $cooldown_hours, $reward_points, $uses_callback, $callback_secret);
+                    $stmt->bind_param("sssssiiss", $callback_file_name, $site_name, $siteid, $url_format, $button_image_url, $cooldown_hours, $reward_points, $uses_callback, $callback_secret);
                 }
                 $stmt->execute();
                 $stmt->close();

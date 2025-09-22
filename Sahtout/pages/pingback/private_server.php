@@ -13,7 +13,7 @@ try {
 } catch (Exception $e) {
     http_response_code(500);
     header('Content-Type: application/json');
-    echo json_encode(["status" => "error", "message" => "Include failed."]);
+    echo json_encode(["status" => "error", "message" => "Include failed: " . $e->getMessage()]);
     exit;
 }
 
@@ -21,7 +21,7 @@ try {
 if (!$site_db || !$site_db instanceof mysqli || $site_db->connect_error) {
     http_response_code(500);
     header('Content-Type: application/json');
-    echo json_encode(["status" => "error", "message" => "Database connection failed."]);
+    echo json_encode(["status" => "error", "message" => "Database connection failed: " . $site_db->connect_error]);
     exit;
 }
 
@@ -31,10 +31,10 @@ $userid = isset($_POST['userid']) ? preg_replace('/[^a-zA-Z0-9_-]/', '', $_POST[
 $userip = isset($_POST['userip']) ? filter_var($_POST['userip'], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) : (isset($_GET['userip']) ? filter_var($_GET['userip'], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) : null);
 $voted  = isset($_POST['voted']) ? (int)$_POST['voted'] : (isset($_GET['voted']) ? (int)$_GET['voted'] : 0);
 
-if (!$secret || !$userid || !$userip || $voted !== 1) {
+if (!$userid || !$userip || $voted !== 1) {
     http_response_code(400);
     header('Content-Type: application/json');
-    echo json_encode(["status" => "error", "message" => "Missing or invalid secret, userid, userip, or voted."]);
+    echo json_encode(["status" => "error", "message" => "Missing or invalid userid, userip, or voted."]);
     exit;
 }
 
@@ -48,10 +48,18 @@ if (strlen($userid) > 32 || strlen($userid) === 0) {
 // Find Private-Server.ws site entry
 $callback_file_name = 'private_server';
 $stmt = $site_db->prepare("SELECT id, callback_secret, reward_points, cooldown_hours FROM vote_sites WHERE callback_file_name = ? AND uses_callback = 1");
-if (!$stmt || !$stmt->bind_param("s", $callback_file_name) || !$stmt->execute()) {
+if (!$stmt) {
     http_response_code(500);
     header('Content-Type: application/json');
-    echo json_encode(["status" => "error", "message" => "Failed to query vote_sites."]);
+    echo json_encode(["status" => "error", "message" => "Failed to prepare vote_sites query: " . $site_db->error]);
+    exit;
+}
+$stmt->bind_param("s", $callback_file_name);
+if (!$stmt->execute()) {
+    http_response_code(500);
+    header('Content-Type: application/json');
+    echo json_encode(["status" => "error", "message" => "Failed to execute vote_sites query: " . $site_db->error]);
+    $stmt->close();
     exit;
 }
 $result = $stmt->get_result();
@@ -59,6 +67,7 @@ if ($result->num_rows === 0) {
     http_response_code(400);
     header('Content-Type: application/json');
     echo json_encode(["status" => "error", "message" => "Private-Server.ws site not found."]);
+    $stmt->close();
     exit;
 }
 $site = $result->fetch_assoc();
@@ -68,20 +77,31 @@ $reward_points    = (int)$site['reward_points'];
 $cooldown_hours   = (int)$site['cooldown_hours'];
 $stmt->close();
 
-// Validate secret
-if ($callback_secret && $secret !== $callback_secret) {
-    http_response_code(403);
-    header('Content-Type: application/json');
-    echo json_encode(["status" => "error", "message" => "Invalid secret key."]);
-    exit;
+// Validate secret only if one is configured in the database
+if (!empty($callback_secret)) {
+    if ($secret !== $callback_secret) {
+        http_response_code(403);
+        header('Content-Type: application/json');
+        echo json_encode(["status" => "error", "message" => "Invalid secret key."]);
+        exit;
+    }
 }
+
 
 // Validate user
 $stmt = $site_db->prepare("SELECT account_id FROM user_currencies WHERE username = ? OR account_id = ?");
-if (!$stmt || !$stmt->bind_param("ss", $userid, $userid) || !$stmt->execute()) {
+if (!$stmt) {
     http_response_code(500);
     header('Content-Type: application/json');
-    echo json_encode(["status" => "error", "message" => "Failed to query user_currencies."]);
+    echo json_encode(["status" => "error", "message" => "Failed to prepare user_currencies query: " . $site_db->error]);
+    exit;
+}
+$stmt->bind_param("ss", $userid, $userid);
+if (!$stmt->execute()) {
+    http_response_code(500);
+    header('Content-Type: application/json');
+    echo json_encode(["status" => "error", "message" => "Failed to execute user_currencies query: " . $site_db->error]);
+    $stmt->close();
     exit;
 }
 $result = $stmt->get_result();
@@ -89,6 +109,7 @@ if ($result->num_rows === 0) {
     http_response_code(400);
     header('Content-Type: application/json');
     echo json_encode(["status" => "error", "message" => "User not found."]);
+    $stmt->close();
     exit;
 }
 $row = $result->fetch_assoc();
@@ -103,7 +124,14 @@ $stmt = $site_db->prepare("
     WHERE user_id = ? AND site_id = ?
     ORDER BY vote_timestamp DESC LIMIT 1
 ");
-if ($stmt && $stmt->bind_param("ii", $user_id, $internal_site_id) && $stmt->execute()) {
+if (!$stmt) {
+    http_response_code(500);
+    header('Content-Type: application/json');
+    echo json_encode(["status" => "error", "message" => "Failed to prepare vote_log query: " . $site_db->error]);
+    exit;
+}
+$stmt->bind_param("ii", $user_id, $internal_site_id);
+if ($stmt->execute()) {
     $result = $stmt->get_result();
     if ($result->num_rows > 0) {
         $last_vote = $result->fetch_assoc();
@@ -114,6 +142,12 @@ if ($stmt && $stmt->bind_param("ii", $user_id, $internal_site_id) && $stmt->exec
         }
     }
     $stmt->close();
+} else {
+    http_response_code(500);
+    header('Content-Type: application/json');
+    echo json_encode(["status" => "error", "message" => "Failed to execute vote_log query: " . $site_db->error]);
+    $stmt->close();
+    exit;
 }
 
 if (!$can_vote) {
@@ -123,43 +157,58 @@ if (!$can_vote) {
     exit;
 }
 
-// Log the vote
-$reward_status = 0; // Pending
+// Log the vote and grant reward
+$reward_status = 0; // Success (reward granted)
 $now = time();
 $site_db->begin_transaction();
 try {
+    // Log the vote
     $stmt = $site_db->prepare("
         INSERT INTO vote_log (site_id, user_id, ip_address, vote_timestamp, reward_status)
         VALUES (?, ?, ?, ?, ?)
     ");
     if (!$stmt) {
-        throw new Exception("Failed to prepare vote_log insert.");
+        throw new Exception("Failed to prepare vote_log insert: " . $site_db->error);
     }
     $stmt->bind_param("iisii", $internal_site_id, $user_id, $userip, $now, $reward_status);
     if (!$stmt->execute()) {
-        throw new Exception("Failed to execute vote_log insert.");
+        throw new Exception("Failed to execute vote_log insert: " . $stmt->error);
     }
     $stmt->close();
+
+    // Grant reward
+    $stmt = $site_db->prepare("
+        UPDATE user_currencies SET points = points + ? WHERE account_id = ?
+    ");
+    if (!$stmt) {
+        throw new Exception("Failed to prepare points update: " . $site_db->error);
+    }
+    $stmt->bind_param("ii", $reward_points, $user_id);
+    if (!$stmt->execute()) {
+        throw new Exception("Failed to execute points update: " . $stmt->error);
+    }
+    $stmt->close();
+
     $site_db->commit();
 
     http_response_code(200);
     header('Content-Type: application/json');
     echo json_encode([
         "status" => "success",
-        "message" => "Vote logged successfully for $userid (ID: $user_id). Reward pending.",
-        "points_pending" => $reward_points
+        "message" => "Vote logged and reward granted for $userid (ID: $user_id).",
+        "points_added" => $reward_points
     ]);
 } catch (Exception $e) {
     $site_db->rollback();
     http_response_code(500);
     header('Content-Type: application/json');
-    echo json_encode(["status" => "error", "message" => "Error logging vote."]);
+    echo json_encode(["status" => "error", "message" => "Error logging vote or granting reward: " . $e->getMessage()]);
 }
 
 // Close database connections
 $site_db->close();
-$auth_db->close();
-$world_db->close();
-$char_db->close();
+if (isset($auth_db)) $auth_db->close();
+if (isset($world_db)) $world_db->close();
+if (isset($char_db)) $char_db->close();
 exit;
 ?>
